@@ -38,12 +38,23 @@ You type in /chat  →  browser sends messages to POST /api/chat
 
 Copy [`env.example`](./env.example) → `.env.local` and set **`OPENROUTER_API_KEY`** and **`WALLET_REST_TOKEN`**. Optionally **`WALLET_REST_BASE_URL`** (defaults to Wallet production). The chat UI sends your **browser timezone** automatically on each request (`Intl`); set **`FRING_USER_TIMEZONE`** only as a fallback when calling the API without a browser (defaults to UTC otherwise). Mirror values in Vercel as encrypted env vars (`NEXT_PUBLIC_*` only for intentional client exposure — never secrets).
 
+### Access gate (no paid Vercel Deployment Protection)
+
+FRING uses **Option A**: **`FRING_ACCESS_PASSWORD`** plus **`FRING_AUTH_SECRET`** issue a signed **httpOnly** JWT cookie (`fring_session`). [**Proxy**](proxy.ts) (Next.js request gate) blocks **`/`**, **`/chat`**, and **`POST /api/chat`** until you sign in at **`/login`**.
+
+- **Production:** If either gate env var is missing, protected routes respond **503** (fail closed).
+- **Local dev:** If both are unset, the gate is **skipped** so `npm run dev` works without typing a password.
+
+Before deploying to Vercel, add **`FRING_ACCESS_PASSWORD`** and **`FRING_AUTH_SECRET`** (e.g. `openssl rand -hex 32`) for **Production** (and Preview if you use previews), then redeploy.
+
 ### Routes
 
 | Path | Behavior |
 |------|----------|
-| `/` | Landing + entry to chat |
+| `/` | Landing + entry to chat (requires session cookie when gate configured in prod) |
+| `/login` | Password form → sets session cookie |
 | `/chat` | Chat UI; redirects to `/chat?t=<nanoid>`; IndexedDB restores `fring-v1-chat-<id>` |
+| `POST /api/auth/login` | Validates password; sets `fring_session` JWT cookie |
 | `POST /api/chat` | `toUIMessageStreamResponse` for `DefaultChatTransport` + `useChat` |
 
 ### Dev
@@ -52,6 +63,6 @@ Copy [`env.example`](./env.example) → `.env.local` and set **`OPENROUTER_API_K
 npm run dev
 ```
 
-Browse to `/chat`.
+Browse **`/`**. With **`FRING_ACCESS_PASSWORD`** and **`FRING_AUTH_SECRET`** in `.env.local`, visit **`/login`** once per browser profile first. Omit **both** gate variables locally if you want to disable the gate during development.
 
 Bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
