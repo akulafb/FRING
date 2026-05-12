@@ -99,9 +99,6 @@ export default function LoginPage() {
         <p className="mt-2 text-pretty text-sm text-muted-foreground sm:text-[0.9375rem]">
           Fahd&apos;s Really Intelligent Numbers Guy
         </p>
-        <p className="mt-3 text-pretty text-sm text-muted-foreground sm:text-[0.9375rem]">
-          Enter your access password to continue.
-        </p>
 
         <Suspense
           fallback={
