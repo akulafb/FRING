@@ -2,7 +2,7 @@
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { ArrowUp } from "lucide-react";
+import { ArrowUp, Eye, EyeOff } from "lucide-react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { type FormEvent, Suspense, useState } from "react";
@@ -11,6 +11,7 @@ function LoginForm() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const [password, setPassword] = useState("");
+  const [showPassword, setShowPassword] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -54,16 +55,34 @@ function LoginForm() {
     <div className="mx-auto mt-14 w-full max-w-md">
       <form onSubmit={(e) => void onSubmit(e)}>
         <div className="flex gap-2">
-          <Input
-            type="password"
-            autoComplete="current-password"
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-            disabled={busy}
-            placeholder="Access password…"
-            aria-label="Access password"
-            className="h-11 flex-1 rounded-xl border-border/80 bg-background px-4 text-base shadow-sm md:text-base"
-          />
+          <div className="relative flex-1">
+            <Input
+              type={showPassword ? "text" : "password"}
+              autoComplete="current-password"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              disabled={busy}
+              placeholder="Access password…"
+              aria-label="Access password"
+              className="h-11 w-full rounded-xl border-border/80 bg-background py-2 pr-11 pl-4 text-base shadow-sm md:text-base"
+            />
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon-sm"
+              disabled={busy}
+              className="absolute top-1/2 right-1 size-9 -translate-y-1/2 rounded-lg text-muted-foreground hover:text-foreground"
+              aria-label={showPassword ? "Hide password" : "Show password"}
+              aria-pressed={showPassword}
+              onClick={() => setShowPassword((v) => !v)}
+            >
+              {showPassword ? (
+                <EyeOff className="size-5" strokeWidth={2} />
+              ) : (
+                <Eye className="size-5" strokeWidth={2} />
+              )}
+            </Button>
+          </div>
           <Button
             type="submit"
             size="icon-lg"
