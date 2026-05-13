@@ -13,7 +13,7 @@ import { aggregateRows, type GroupBy } from "@/lib/wallet/aggregate";
 import { WalletConfigError } from "@/lib/wallet/errors";
 import { pickAssistantWalletSearchRecord } from "@/lib/wallet/assistant-record-shape";
 import { enrichWalletRecordRow } from "@/lib/wallet/record-times";
-import { walletFetchRecordPages } from "@/lib/wallet/records";
+import { walletFetchRecordPages, walletFetchRecordPagesPayeeOrNote } from "@/lib/wallet/records";
 import { walletGetJson } from "@/lib/wallet/request";
 
 const walletDatePresetSchema = z.enum(["today", "yesterday", "last_7_days"]);
@@ -208,30 +208,58 @@ export function createFringWalletTools(calendar: CalendarSnapshot) {
 
   wallet_search_records: tool({
     description:
-      "Fetch Wallet transactions (slim preview per row: ids, amounts, labels, truncated notes, recordDateForUser.lineForAssistant). Prefer wallet_aggregate_spend for rollups/totals. For full Wallet fields call wallet_get_record with id from a preview row. Defaults return ~200 rows / few pages; widen maxRows sparingly (schema max 1000) and prefer narrower date ranges instead of paging huge sets. Prefer datePreset for “today”, “yesterday”, or last 7 days — it overrides startDate/endDate when both are present.",
-    inputSchema: z.object({
-      datePreset: walletDatePresetSchema
-        .optional()
-        .describe(
-          "calendar range in user's browser timezone (sent with chat) — today | yesterday | last_7_days (inclusive); overrides startDate/endDate if set.",
-        ),
-      startDate: z
-        .string()
-        .regex(/^\d{4}-\d{2}-\d{2}$/)
-        .optional()
-        .describe("Inclusive lower bound recordDate"),
-      endDate: z
-        .string()
-        .regex(/^\d{4}-\d{2}-\d{2}$/)
-        .optional()
-        .describe("Inclusive upper bound recordDate"),
-      categoryContains: z.string().optional(),
-      accountId: z.string().optional(),
-      payeeContains: z.string().optional(),
-      noteContains: z.string().optional(),
-      maxPages: z.number().int().min(1).max(35).optional(),
-      maxRows: z.number().int().min(1).max(WALLET_SEARCH_SCHEMA_MAX_ROWS).optional(),
-    }),
+      "Fetch Wallet transactions (slim preview per row). Custom user text—recipients, gift wording (“birthday cake for dareen”), occasions—normally lives in the **note** field; category/subcategory classify. Use **noteContains** + categoryContains for that; **payeeContains** suits merchants/shops; **merchantOrMemoContains** if the phrase might be payee or note. Prefer wallet_aggregate_spend for sums with the same filters. wallet_get_record for full row. Defaults ~200 rows; max 1000. datePreset overrides start/end.",
+    inputSchema: z
+      .object({
+        datePreset: walletDatePresetSchema
+          .optional()
+          .describe(
+            "calendar range in user's browser timezone (sent with chat) — today | yesterday | last_7_days (inclusive); overrides startDate/endDate if set.",
+          ),
+        startDate: z
+          .string()
+          .regex(/^\d{4}-\d{2}-\d{2}$/)
+          .optional()
+          .describe("Inclusive lower bound recordDate"),
+        endDate: z
+          .string()
+          .regex(/^\d{4}-\d{2}-\d{2}$/)
+          .optional()
+          .describe("Inclusive upper bound recordDate"),
+        categoryContains: z.string().optional(),
+        accountId: z.string().optional(),
+        payeeContains: z
+          .string()
+          .optional()
+          .describe(
+            "Substring in Wallet payee/merchant (e.g. store). Not the main field for user-written captions or recipient names—that is usually noteContains.",
+          ),
+        noteContains: z
+          .string()
+          .optional()
+          .describe(
+            "Substring in Wallet **note** — primary filter for bespoke text such as recipients, gifts, occasions. Pair with categoryContains when relevant.",
+          ),
+        merchantOrMemoContains: z
+          .string()
+          .optional()
+          .describe(
+            "Match payee OR note (union, deduped). Use when wording might be in merchant or note; if it is clearly user caption text, prefer noteContains. Mutually exclusive with payeeContains and noteContains.",
+          ),
+        maxPages: z.number().int().min(1).max(35).optional(),
+        maxRows: z.number().int().min(1).max(WALLET_SEARCH_SCHEMA_MAX_ROWS).optional(),
+      })
+      .superRefine((val, ctx) => {
+        const mem = val.merchantOrMemoContains?.trim();
+        if (mem && (val.payeeContains || val.noteContains)) {
+          ctx.addIssue({
+            code: "custom",
+            path: ["merchantOrMemoContains"],
+            message:
+              "Use merchantOrMemoContains alone for payee-or-note matching, or payeeContains / noteContains — not both.",
+          });
+        }
+      }),
     execute: async (input) => {
       try {
         const qs = new URLSearchParams();
@@ -252,20 +280,40 @@ export function createFringWalletTools(calendar: CalendarSnapshot) {
         if (input.categoryContains) {
           qs.append("category", `contains-i.${input.categoryContains}`);
         }
-        if (input.payeeContains) {
-          qs.append("payee", `contains-i.${input.payeeContains}`);
-        }
-        if (input.noteContains) {
-          qs.append("note", `contains-i.${input.noteContains}`);
-        }
         if (input.accountId) {
           qs.append("accountId", `eq.${input.accountId}`);
         }
 
-        const { rows, pages, truncated } = await walletFetchRecordPages(qs, {
+        const fetchOpts = {
           maxPages: input.maxPages ?? WALLET_SEARCH_DEFAULT_MAX_PAGES,
           maxRows: input.maxRows ?? WALLET_SEARCH_DEFAULT_MAX_ROWS,
-        });
+        };
+
+        let rows: Record<string, unknown>[];
+        let pages: number;
+        let truncated: boolean;
+
+        if (input.merchantOrMemoContains?.trim()) {
+          const r = await walletFetchRecordPagesPayeeOrNote(
+            qs,
+            input.merchantOrMemoContains.trim(),
+            fetchOpts,
+          );
+          rows = r.rows;
+          pages = r.pages;
+          truncated = r.truncated;
+        } else {
+          if (input.payeeContains) {
+            qs.append("payee", `contains-i.${input.payeeContains}`);
+          }
+          if (input.noteContains) {
+            qs.append("note", `contains-i.${input.noteContains}`);
+          }
+          const r = await walletFetchRecordPages(qs, fetchOpts);
+          rows = r.rows;
+          pages = r.pages;
+          truncated = r.truncated;
+        }
 
         const records = rows.map((row) =>
           pickAssistantWalletSearchRecord(
@@ -282,6 +330,12 @@ export function createFringWalletTools(calendar: CalendarSnapshot) {
           totalReturned: records.length,
           pages,
           truncated,
+          ...(truncated
+            ? {
+                truncationWarning:
+                  "Fewer rows than may exist in Wallet for this filter — widen maxRows/maxPages, narrow dates, or split into multiple queries.",
+              }
+            : {}),
           dateRangeApplied:
             startDate && endDate
               ? {
@@ -300,7 +354,7 @@ export function createFringWalletTools(calendar: CalendarSnapshot) {
 
   wallet_aggregate_spend: tool({
     description:
-      "Deterministic aggregation of Wallet records by category, calendar month (YYYY-MM), or account label string. Computes totals/counts server-side. Prefer datePreset for calendar-relative ranges (same timezone rules as wallet_search_records).",
+      "Aggregation by category, month (YYYY-MM), or account. User-written personalization (gift for X, captions) typically lives in **note** → use noteContains + categoryContains for totals like “gifts for dareen”; payeeContains mainly for merchants. merchantOrMemoContains if ambiguous. Respect truncated.",
     inputSchema: z
       .object({
         datePreset: walletDatePresetSchema
@@ -317,6 +371,24 @@ export function createFringWalletTools(calendar: CalendarSnapshot) {
         groupBy: z.enum(["category", "month", "account"]),
         categoryContains: z.string().optional(),
         accountId: z.string().optional(),
+        payeeContains: z
+          .string()
+          .optional()
+          .describe(
+            "Payee/vendor substring—not the default for recipient-oriented text in entries (see noteContains).",
+          ),
+        noteContains: z
+          .string()
+          .optional()
+          .describe(
+            "Note-field substring — default for captions, recipients, occasions (paired with categoryContains).",
+          ),
+        merchantOrMemoContains: z
+          .string()
+          .optional()
+          .describe(
+            "Payee OR note union; prefer noteContains for clearly user-entered captions. Mutually exclusive with payeeContains and noteContains.",
+          ),
         maxPages: z.number().int().min(1).max(35).optional(),
         maxRows: z.number().int().min(1).max(4000).optional(),
       })
@@ -327,6 +399,17 @@ export function createFringWalletTools(calendar: CalendarSnapshot) {
             code: "custom",
             message:
               "Provide datePreset OR both startDate and endDate (YYYY-MM-DD).",
+          });
+        }
+      })
+      .superRefine((val, ctx) => {
+        const mem = val.merchantOrMemoContains?.trim();
+        if (mem && (val.payeeContains || val.noteContains)) {
+          ctx.addIssue({
+            code: "custom",
+            path: ["merchantOrMemoContains"],
+            message:
+              "Use merchantOrMemoContains alone for payee-or-note matching, or payeeContains / noteContains — not both.",
           });
         }
       }),
@@ -349,10 +432,36 @@ export function createFringWalletTools(calendar: CalendarSnapshot) {
           qs.append("accountId", `eq.${input.accountId}`);
         }
 
-        const { rows, pages, truncated } = await walletFetchRecordPages(qs, {
+        const fetchOptsAgg = {
           maxPages: input.maxPages,
           maxRows: input.maxRows,
-        });
+        };
+
+        let rows: Record<string, unknown>[];
+        let pages: number;
+        let truncated: boolean;
+
+        if (input.merchantOrMemoContains?.trim()) {
+          const r = await walletFetchRecordPagesPayeeOrNote(
+            qs,
+            input.merchantOrMemoContains.trim(),
+            fetchOptsAgg,
+          );
+          rows = r.rows;
+          pages = r.pages;
+          truncated = r.truncated;
+        } else {
+          if (input.payeeContains) {
+            qs.append("payee", `contains-i.${input.payeeContains}`);
+          }
+          if (input.noteContains) {
+            qs.append("note", `contains-i.${input.noteContains}`);
+          }
+          const r = await walletFetchRecordPages(qs, fetchOptsAgg);
+          rows = r.rows;
+          pages = r.pages;
+          truncated = r.truncated;
+        }
 
         const groups = aggregateRows(rows, input.groupBy as GroupBy).sort(
           (a, b) => Math.abs(b.total) - Math.abs(a.total)
@@ -370,6 +479,12 @@ export function createFringWalletTools(calendar: CalendarSnapshot) {
           pages,
           truncated,
           rowsUsed: rows.length,
+          ...(truncated
+            ? {
+                truncationWarning:
+                  "Row/page cap stopped early — summed rows may omit some matching transactions (e.g. many gifts in-range). Narrow the question, add merchantOrMemoContains + categoryContains, or raise maxRows/maxPages.",
+              }
+            : {}),
           groups,
           note:
             "Totals sum the numeric amount field from Wallet (mixed-currency accounts are not split automatically). For presentation, round whole currency units if the user prefers — ignore fussy decimal formatting unless they ask.",
