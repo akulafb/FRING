@@ -1,5 +1,36 @@
 This is **FRING** (“Fahd’s Really Intelligent Numbers Guy”): Next.js App Router + read-only [Wallet REST](https://budgetbakers.com/en/products/wallet/integrations/rest-api/), OpenRouter (AI SDK streaming), deterministic aggregation tools, Recharts-backed `fring_present_chart`, and IndexedDB thread persistence.
 
+### Quick start (fork / self-host, minimal steps)
+
+**Prerequisites:** Node **20.9+** (see [`package.json`](./package.json) `engines`), a **Wallet Premium** REST token, an **OpenRouter** API key, and optionally a **GitHub + Vercel** account if you deploy.
+
+**Local**
+
+1. `git clone` this repo and `cd` into it.
+2. `cp env.example .env.local`
+3. Set **`OPENROUTER_API_KEY`** and **`WALLET_REST_TOKEN`** in `.env.local` (see comments in [`env.example`](./env.example)).
+4. *(Optional, dev convenience)* Leave **`FRING_ACCESS_PASSWORD`** and **`FRING_AUTH_SECRET`** **empty** to skip `/login` while developing locally.
+5. `npm install` then **`npm run build`** once to validate types and env wiring.
+6. `npm run dev` → open `http://localhost:3000`
+
+**Production (e.g. Vercel)**
+
+1. Create a **new Vercel project** from **your fork** (or push this repo to GitHub and import).
+2. In **Settings → Environment variables**, copy every key from **`env.example`**, using **Encrypted** scope for Production (and Preview if you want PR previews).
+3. **Required in Production:** **`FRING_ACCESS_PASSWORD`** and **`FRING_AUTH_SECRET`** (`openssl rand -hex 32`) — otherwise the app **fails closed (503)** on protected routes.
+4. Set **`OPENROUTER_HTTP_REFERER`** to your real site URL (OpenRouter attribution).
+5. Deploy; visit **`/login`**, enter the access password once per browser.
+
+**GitHub “Template repository”** (optional): In the repo **Settings → General → Template repository**, enable *Template* so others get a clean copy with one click.
+
+### Security (read before going public)
+
+- **Never commit** `.env.local` or any file with keys — `.gitignore` already ignores `.env*`.
+- **Wallet token = full read access** to the linked Wallet account. Each self-hoster should use **their own** token; rotate it under Wallet if it leaks.
+- **OpenRouter key** is charged to their account — keep server-only (`NEXT_PUBLIC_*` is never used here for secrets by design).
+- **Access gate** (`FRING_ACCESS_PASSWORD` + JWT cookie) is a **single shared passphrase** per deployment — fine for friends & colleagues, **not** a substitute for SSO or per-user auth. Anyone with the URL + password reaches the assistant and can query whatever the Wallet token can see.
+- **Chat transcripts** stay in **browser IndexedDB** only; **`POST /api/chat`** sends messages to OpenRouter servers per their policy.
+
 ### Stack and how it works
 
 **What you see in the browser**
@@ -34,18 +65,13 @@ You type in /chat  →  browser sends messages to POST /api/chat
                    →  thread snapshot saved to IndexedDB
 ```
 
-### Environment
+### Environment variables
 
-Copy [`env.example`](./env.example) → `.env.local` and set **`OPENROUTER_API_KEY`** and **`WALLET_REST_TOKEN`**. Optionally **`WALLET_REST_BASE_URL`** (defaults to Wallet production). The chat UI sends your **browser timezone** automatically on each request (`Intl`); set **`FRING_USER_TIMEZONE`** only as a fallback when calling the API without a browser (defaults to UTC otherwise). Mirror values in Vercel as encrypted env vars (`NEXT_PUBLIC_*` only for intentional client exposure — never secrets).
+All keys live in **`env.example`** — copy into **`.env.local`** (local) and into **Vercel → Environment Variables** (production). Highlights: **`FRING_USER_TIMEZONE`** is optional (browser TZ is preferred); **`WALLET_REST_BASE_URL`** overrides only if Wallet gives you a non-default REST host; **`FRING_CHAT_MAX_MESSAGES`** optionally caps replayed transcript size for cost. **Never** expose `OPENROUTER_*`, `WALLET_*`, `FRING_ACCESS_PASSWORD`, or `FRING_AUTH_SECRET` under `NEXT_PUBLIC_*`.
 
-### Access gate (no paid Vercel Deployment Protection)
+### Access gate (`proxy`)
 
-FRING uses **Option A**: **`FRING_ACCESS_PASSWORD`** plus **`FRING_AUTH_SECRET`** issue a signed **httpOnly** JWT cookie (`fring_session`). [**Proxy**](proxy.ts) (Next.js request gate) blocks **`/`**, **`/chat`**, and **`POST /api/chat`** until you sign in at **`/login`**.
-
-- **Production:** If either gate env var is missing, protected routes respond **503** (fail closed).
-- **Local dev:** If both are unset, the gate is **skipped** so `npm run dev` works without typing a password.
-
-Before deploying to Vercel, add **`FRING_ACCESS_PASSWORD`** and **`FRING_AUTH_SECRET`** (e.g. `openssl rand -hex 32`) for **Production** (and Preview if you use previews), then redeploy.
+FRING uses **`FRING_ACCESS_PASSWORD`** + **`FRING_AUTH_SECRET`** for an **httpOnly** JWT (**`fring_session`**). **`proxy.ts`** protects **`/`**, **`/chat`**, **`POST /api/chat`**. Behaviour matches **Quick start** / production bullets above ([`proxy.ts`](proxy.ts) for implementation).
 
 ### Routes
 
