@@ -8,6 +8,23 @@ export type RecordsEnvelope = {
   [key: string]: unknown;
 };
 
+/** Stable Wallet record id for de-duplicating merged queries. */
+export function walletRecordStableId(row: Record<string, unknown>): string | null {
+  const id =
+    row.id ??
+    row.recordId ??
+    row.uuid ??
+    row.transactionId ??
+    row.transaction_id;
+  if (typeof id === "string") {
+    return id.trim() || null;
+  }
+  if (typeof id === "number" && Number.isFinite(id)) {
+    return String(id);
+  }
+  return null;
+}
+
 function parseNextOffset(env: RecordsEnvelope): number | undefined {
   const nextRaw = env.nextOffset;
   if (typeof nextRaw === "number" && Number.isFinite(nextRaw)) {
@@ -80,4 +97,46 @@ export async function walletFetchRecordPages(
   }
 
   return { rows, pages, truncated };
+}
+
+/**
+ * Fetch records matching `merchantOrMemoContains` in **either** payee or note,
+ * merging by record id so lines that spell a name only in memo (or only in payee) both count once.
+ *
+ * Runs two capped paginations in parallel — if either hits `truncated`, the merged result does too.
+ */
+export async function walletFetchRecordPagesPayeeOrNote(
+  baseSearch: URLSearchParams,
+  needle: string,
+  opts: { maxPages?: number; maxRows?: number }
+): Promise<{ rows: Record<string, unknown>[]; pages: number; truncated: boolean }> {
+  const qPayee = new URLSearchParams(baseSearch);
+  qPayee.append("payee", `contains-i.${needle}`);
+  const qNote = new URLSearchParams(baseSearch);
+  qNote.append("note", `contains-i.${needle}`);
+
+  const [viaPayee, viaNote] = await Promise.all([
+    walletFetchRecordPages(qPayee, opts),
+    walletFetchRecordPages(qNote, opts),
+  ]);
+
+  const byId = new Map<string, Record<string, unknown>>();
+  for (const r of viaPayee.rows) {
+    const k = walletRecordStableId(r);
+    if (k) {
+      byId.set(k, r);
+    }
+  }
+  for (const r of viaNote.rows) {
+    const k = walletRecordStableId(r);
+    if (k && !byId.has(k)) {
+      byId.set(k, r);
+    }
+  }
+
+  return {
+    rows: [...byId.values()],
+    pages: viaPayee.pages + viaNote.pages,
+    truncated: viaPayee.truncated || viaNote.truncated,
+  };
 }
