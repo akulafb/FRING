@@ -11,11 +11,17 @@ import {
 } from "@/lib/date-context";
 import { aggregateRows, type GroupBy } from "@/lib/wallet/aggregate";
 import { WalletConfigError } from "@/lib/wallet/errors";
+import { pickAssistantWalletSearchRecord } from "@/lib/wallet/assistant-record-shape";
 import { enrichWalletRecordRow } from "@/lib/wallet/record-times";
 import { walletFetchRecordPages } from "@/lib/wallet/records";
 import { walletGetJson } from "@/lib/wallet/request";
 
 const walletDatePresetSchema = z.enum(["today", "yesterday", "last_7_days"]);
+
+/** Search-only caps: keep LLM payloads small (aggregate uses shared fetch defaults). */
+const WALLET_SEARCH_DEFAULT_MAX_ROWS = 200;
+const WALLET_SEARCH_DEFAULT_MAX_PAGES = 5;
+const WALLET_SEARCH_SCHEMA_MAX_ROWS = 1000;
 
 function walletErrMessage(err: unknown): string {
   if (err instanceof WalletConfigError) {
@@ -202,7 +208,7 @@ export function createFringWalletTools(calendar: CalendarSnapshot) {
 
   wallet_search_records: tool({
     description:
-      "Fetch raw Wallet transactions across pages (read-only). Use for line-level drill-down; prefer wallet_aggregate_spend for rollups. Prefer datePreset for “today”, “yesterday”, or last 7 days — overrides start/end when both are present.",
+      "Fetch Wallet transactions (slim preview per row: ids, amounts, labels, truncated notes, recordDateForUser.lineForAssistant). Prefer wallet_aggregate_spend for rollups/totals. For full Wallet fields call wallet_get_record with id from a preview row. Defaults return ~200 rows / few pages; widen maxRows sparingly (schema max 1000) and prefer narrower date ranges instead of paging huge sets. Prefer datePreset for “today”, “yesterday”, or last 7 days — it overrides startDate/endDate when both are present.",
     inputSchema: z.object({
       datePreset: walletDatePresetSchema
         .optional()
@@ -224,7 +230,7 @@ export function createFringWalletTools(calendar: CalendarSnapshot) {
       payeeContains: z.string().optional(),
       noteContains: z.string().optional(),
       maxPages: z.number().int().min(1).max(35).optional(),
-      maxRows: z.number().int().min(1).max(4000).optional(),
+      maxRows: z.number().int().min(1).max(WALLET_SEARCH_SCHEMA_MAX_ROWS).optional(),
     }),
     execute: async (input) => {
       try {
@@ -257,19 +263,22 @@ export function createFringWalletTools(calendar: CalendarSnapshot) {
         }
 
         const { rows, pages, truncated } = await walletFetchRecordPages(qs, {
-          maxPages: input.maxPages,
-          maxRows: input.maxRows,
+          maxPages: input.maxPages ?? WALLET_SEARCH_DEFAULT_MAX_PAGES,
+          maxRows: input.maxRows ?? WALLET_SEARCH_DEFAULT_MAX_ROWS,
         });
 
         const records = rows.map((row) =>
-          enrichWalletRecordRow(row as Record<string, unknown>, calendar),
+          pickAssistantWalletSearchRecord(
+            row as Record<string, unknown>,
+            calendar,
+          ),
         );
 
         return {
           ok: true as const,
           displayTimeZone: calendar.timeZone,
           timeInstruction:
-            "For every expense time you mention, copy from recordDateForUser.lineForAssistant (includes IANA zone + UTC offset). Do not convert from recordDate yourself — it is Wallet UTC.",
+            "Each row is a preview (__walletSearchPreview). For Wallet-native fields beyond this shape, call wallet_get_record(id). Quote times via recordDateForUser.lineForAssistant (includes zone + UTC offset).",
           totalReturned: records.length,
           pages,
           truncated,

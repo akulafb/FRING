@@ -8,6 +8,7 @@ import {
 
 import { createFringWalletTools } from "@/lib/ai/fring-tools";
 import { fringWalletSystemPrompt } from "@/lib/ai/system-prompt";
+import { trimChatModelMessages } from "@/lib/ai/trim-chat-messages";
 import {
   buildCalendarSnapshot,
   resolveCalendarTimeZone,
@@ -54,6 +55,8 @@ export async function POST(req: Request) {
       ? await convertToModelMessages(messages)
       : (messages as ModelMessage[]);
 
+    const trimmedMessages = trimChatModelMessages(modelMessages);
+
     const clientTzSanitized = sanitizeIncomingClientTimezone(
       body.clientTimeZone,
     );
@@ -69,10 +72,10 @@ export async function POST(req: Request) {
     const result = streamText({
       model: openrouter.chat(modelId),
       system: fringWalletSystemPrompt(calendar),
-      messages: modelMessages,
+      messages: trimmedMessages,
       tools: createFringWalletTools(calendar),
       temperature: 0.2,
-      stopWhen: stepCountIs(28),
+      stopWhen: stepCountIs(16),
     });
 
     return result.toUIMessageStreamResponse();
